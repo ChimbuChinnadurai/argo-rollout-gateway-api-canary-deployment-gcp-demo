@@ -1,0 +1,130 @@
+---
+kind: Gateway
+apiVersion: gateway.networking.k8s.io/v1beta1
+metadata:
+  name: external-http
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      options:
+        networking.gke.io/pre-shared-certs: chimbu-argo-playground-cert
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gateway-controller-role
+  namespace: argo-rollouts
+rules:
+  - apiGroups:
+      - "*"
+    resources:
+      - "*"
+    verbs:
+      - "*"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gateway-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gateway-controller-role
+subjects:
+  - namespace: argo-rollouts
+    kind: ServiceAccount
+    name: argo-rollouts
+---
+kind: HTTPRoute
+apiVersion: gateway.networking.k8s.io/v1beta1
+metadata:
+  name: argo-rollouts-canary-demo-http-route
+spec:
+  parentRefs:
+  - kind: Gateway
+    name: external-http
+  hostnames:
+  - "chimbu-argo-rollouts.gcp.uk-pod-3.cs.playgrounds.doit.com"
+  rules:
+    - backendRefs:
+        - name: argo-rollouts-stable-service
+          port: 443
+        - name: argo-rollouts-canary-service
+          port: 443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argo-rollouts-stable-service
+spec:
+  ports:
+    - port: 443
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: argo-rollouts-canary-demo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argo-rollouts-canary-service
+spec:
+  ports:
+    - port: 443
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: argo-rollouts-canary-demo
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: argo-rollouts-canary-demo
+  namespace: default
+spec:
+  revisionHistoryLimit: 1
+  replicas: 5
+  strategy:
+    canary:
+      canaryService: argo-rollouts-canary-service
+      stableService: argo-rollouts-stable-service
+      trafficRouting:
+        plugins:
+          argoproj-labs/gatewayAPI:
+            httpRoute: argo-rollouts-canary-demo-http-route
+            namespace: default
+      steps:
+      - setWeight: 30
+      - pause: {}
+      - setWeight: 60
+      - pause: {}
+      - setWeight: 100
+      - pause: {}
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: argo-rollouts-canary-demo
+  template:
+    metadata:
+      labels:
+        app: argo-rollouts-canary-demo
+    spec:
+      containers:
+        - name: argo-rollouts-canary-demo
+          image: argoproj/rollouts-demo:red
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 5m
+
